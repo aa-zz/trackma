@@ -3232,7 +3232,7 @@ class Engine_Worker(QtCore.QThread):
 
 
 def getIcon(icon_name):
-    fallback = QIcon(utils.datadir + '/data/qtui/{}.png'.format(icon_name))
+    fallback = QIcon(utils.datadir + '/data/qtui/{}.svg'.format(icon_name))
     return QIcon.fromTheme(icon_name, fallback)
 
 
