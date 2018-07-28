@@ -224,7 +224,7 @@ class libmal(lib):
 
         # Post the request
         try:
-            self._request(self.url + 'ownlist/anime/add.json', jsondata=data, post=True)
+            self._request('{}ownlist/{}/add.json'.format(self.url, self.mediatype), jsondata=data, post=True)
         except utils.APIError as e:
             raise utils.APIError('Error adding %s: %s' % (item['title'], str(e))) from e
 
@@ -247,7 +247,7 @@ class libmal(lib):
         self.msg.info(self.name, "Deleting show %s..." % item['title'])
 
         try:
-            self._request('{}ownlist/anime/{id}/delete'.format(self.url, item['id']), post=True)
+            self._request('{}ownlist/{}/{}/delete'.format(self.url, self.mediatype, item['id']), post=True)
         except utils.APIError as e:
             raise utils.APIError('Error deleting %s: %s' % (item['title'], str(e))) from e
 
@@ -415,13 +415,13 @@ class libmal(lib):
             result['num_read_volumes'] = item['my_volumes']
         if 'my_score' in item:
             result['score'] = item['my_score']
-        if 'my_start_date' in item:
+        if 'my_start_date' in item and item['my_start_date']:
             result['start_date'] = {
                 'year': item['my_start_date'].year,
                 'month': item['my_start_date'].month,
                 'day': item['my_start_date'].day,
             }
-        if 'my_finish_date' in item:
+        if 'my_finish_date' in item and item['my_finish_date']:
             result['finish_date'] = {
                 'year': item['my_finish_date'].year,
                 'month': item['my_finish_date'].month,
