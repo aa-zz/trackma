@@ -41,7 +41,8 @@ if not skip_pyqt5:
             QDialog, QColorDialog, QDialogButtonBox,
             QFileDialog, QInputDialog, QMessageBox,
             QAction, QActionGroup, QLabel, QMenu, QStyle,
-            QSystemTrayIcon, QStyleOptionProgressBar
+            QSystemTrayIcon, QStyleOptionProgressBar,
+            QSizePolicy
         )
         pyqt_version = 5
     except ImportError:
@@ -265,7 +266,7 @@ class Trackma(QMainWindow):
         self.menu_columns = QMenu()
         self.available_columns = ['ID', 'Title', 'Progress', 'Score',
                 'Percent', 'Next Episode', 'Start date', 'End date',
-                'My start', 'My finish', 'Tags']
+                'My start', 'My finish', 'Tags', 'Volumes']
         self.column_keys = {'id': 0,
                             'title': 1,
                             'progress': 2,
@@ -276,7 +277,8 @@ class Trackma(QMainWindow):
                             'date_end': 7,
                             'my_start': 8,
                             'my_end': 9,
-                            'tag': 10}
+                            'tag': 10,
+                            'volumes': 11}
 
         self.menu_columns_group = QActionGroup(self, exclusive=False)
         self.menu_columns_group.triggered.connect(self.s_toggle_column)
@@ -405,6 +407,21 @@ class Trackma(QMainWindow):
         self.show_dec_btn.clicked.connect(self.s_rem_episode)
         self.show_dec_btn.setShortcut('Ctrl+Left')
         self.show_dec_btn.setToolTip('Decrement number of episodes watched')
+        self.volumes_progress_label = QLabel('Volumes:')
+        self.volumes_progress = QSpinBox()
+        self.volumes_progress_btn = QPushButton('Update')
+        self.volumes_progress_btn.setToolTip('Set number of volumes read to the value entered above')
+        self.volumes_progress_btn.clicked.connect(self.s_set_volumes)
+        self.volumes_inc_btn = QToolButton()
+        self.volumes_inc_btn.setIcon(getIcon('go-up'))
+        self.volumes_inc_btn.setShortcut('Ctrl+Alt+Right')
+        self.volumes_inc_btn.setToolTip('Increment number of volumes read')
+        self.volumes_inc_btn.clicked.connect(self.s_plus_volumes)
+        self.volumes_dec_btn = QToolButton()
+        self.volumes_dec_btn.setIcon(getIcon('go-down'))
+        self.volumes_dec_btn.clicked.connect(self.s_rem_volumes)
+        self.volumes_dec_btn.setShortcut('Ctrl+Alt+Left')
+        self.volumes_dec_btn.setToolTip('Decrement number of volumes read')
         show_score_label = QLabel('Score:')
         self.show_score = QDoubleSpinBox()
         self.show_score_btn = QPushButton('Set')
@@ -417,9 +434,11 @@ class Trackma(QMainWindow):
         self.show_status.setToolTip('Change your watching status of this show')
         self.show_status.currentIndexChanged.connect(self.s_set_status)
 
+        small_btns_hbox.addWidget(self.volumes_dec_btn)
         small_btns_hbox.addWidget(self.show_dec_btn)
         small_btns_hbox.addWidget(self.show_play_btn)
         small_btns_hbox.addWidget(self.show_inc_btn)
+        small_btns_hbox.addWidget(self.volumes_inc_btn)
         small_btns_hbox.setAlignment(QtCore.Qt.AlignCenter)
 
         left_box.addRow(self.show_image)
@@ -427,10 +446,14 @@ class Trackma(QMainWindow):
         left_box.addRow(small_btns_hbox)
         left_box.addRow(show_progress_label)
         left_box.addRow(self.show_progress, self.show_progress_btn)
+        left_box.addRow(self.volumes_progress_label)
+        left_box.addRow(self.volumes_progress, self.volumes_progress_btn)
         left_box.addRow(show_score_label)
         left_box.addRow(self.show_score, self.show_score_btn)
         left_box.addRow(self.show_status)
         left_box.addRow(self.show_tags_btn)
+
+        self._show_volumes(False)
 
         filter_bar_box_layout.addWidget(QLabel('Filter:'))
         filter_bar_box_layout.addWidget(self.show_filter)
@@ -581,7 +604,11 @@ class Trackma(QMainWindow):
         self.menuBar().setEnabled(enable)
 
         if self.selected_show_id:
+            self.show_progress.setEnabled(enable)
             self.show_progress_btn.setEnabled(enable)
+            self.volumes_progress.setEnabled(enable)
+            self.volumes_progress_btn.setEnabled(enable)
+            self.show_score.setEnabled(enable)
             self.show_score_btn.setEnabled(enable)
             if 'can_tag' in self.mediainfo and self.mediainfo.get('can_tag'):
                 self.show_tags_btn.setEnabled(enable)
@@ -590,7 +617,16 @@ class Trackma(QMainWindow):
             self.show_play_btn.setEnabled(enable)
             self.show_inc_btn.setEnabled(enable)
             self.show_dec_btn.setEnabled(enable)
+            self.volumes_inc_btn.setEnabled(enable)
+            self.volumes_dec_btn.setEnabled(enable)
             self.show_status.setEnabled(enable)
+
+    def _show_volumes(self, show):
+        self.volumes_progress_label.setVisible(show)
+        self.volumes_dec_btn.setVisible(show)
+        self.volumes_inc_btn.setVisible(show)
+        self.volumes_progress.setVisible(show)
+        self.volumes_progress_btn.setVisible(show)
 
     def _update_queue_counter(self, queue):
         self.queue_text.setText("Unsynced items: %d" % queue)
@@ -693,15 +729,6 @@ class Trackma(QMainWindow):
             if column not in self.config['visible_columns']:
                 widget.setColumnHidden(i, True)
 
-        if pyqt_version is 5:
-            widget.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-            widget.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
-            widget.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
-        else:
-            widget.horizontalHeader().setResizeMode(1, QHeaderView.Stretch)
-            widget.horizontalHeader().setResizeMode(2, QHeaderView.Fixed)
-            widget.horizontalHeader().setResizeMode(3, QHeaderView.Fixed)
-
         widget.horizontalHeader().resizeSection(2, 70)
         widget.horizontalHeader().resizeSection(3, 55)
         widget.horizontalHeader().resizeSection(4, 100)
@@ -720,7 +747,7 @@ class Trackma(QMainWindow):
             else:
                 for show in showlist:
                     self._update_row( widget, i, show, altnames.get(show['id']) )
-                    i += 1                    
+                    i += 1
         else:
             if status != self.worker.engine.mediainfo['status_finish']:
                 for show in showlist:
@@ -729,8 +756,8 @@ class Trackma(QMainWindow):
             else:
                 for show in showlist:
                     self._update_row( widget, i, show, altnames.get(show['id']) )
-                    i += 1                    
-            
+                    i += 1
+
         widget.setSortingEnabled(True)
         widget.sortByColumn(self.config['sort_index'], self.config['sort_order'])
 
@@ -746,6 +773,7 @@ class Trackma(QMainWindow):
         if altname:
             title_str += " [%s]" % altname
         progress_str = "{} / {}".format(show['my_progress'], show['total'] or '?')
+        volumes_str  = "{} / {}".format(show.get('my_volumes') or '?', show.get('total_volumes') or '?')
         percent_widget = EpisodeBar(self, self.config['colors'])
         percent_widget.setRange(0, 100)
         percent_widget.setBarStyle(self.config['episodebar_style'], self.config['episodebar_text'])
@@ -789,13 +817,9 @@ class Trackma(QMainWindow):
         widget.setItem(row, 7, ShowItemDate( show['end_date'], color ))
         widget.setItem(row, 8, ShowItemDate( show['my_start_date'], color ))
         widget.setItem(row, 9, ShowItemDate( show['my_finish_date'], color ))
-        try:
-            tag_str = show['my_tags']
-            if not tag_str:
-                tag_str = '-'
-        except:
-            tag_str = '-'
-        widget.setItem(row, 10, ShowItem( tag_str, color ))
+        widget.setItem(row, 10, ShowItem( show.get('my_tags') or '-', color ))
+        widget.setItem(row, 11, ShowItemNum( show.get('my_volumes', 0), volumes_str, color))
+
 
     def _get_color(self, is_playing, show, eps):
         if is_playing:
@@ -829,16 +853,21 @@ class Trackma(QMainWindow):
             self.show_progress.setValue(0)
             self.show_score.setValue(0)
             self.show_progress.setEnabled(False)
+            self.volumes_progress.setValue(0)
+            self.volumes_progress.setEnabled(False)
             self.show_score.setEnabled(False)
             self.show_progress_bar.setValue(0)
             self.show_progress_bar.setFormat('?/?')
             self.show_status.setEnabled(False)
             self.show_progress_btn.setEnabled(False)
+            self.volumes_progress_btn.setEnabled(False)
             self.show_score_btn.setEnabled(False)
             self.show_tags_btn.setEnabled(False)
             self.show_play_btn.setEnabled(False)
             self.show_inc_btn.setEnabled(False)
             self.show_dec_btn.setEnabled(False)
+            self.volumes_inc_btn.setEnabled(False)
+            self.volumes_dec_btn.setEnabled(False)
             return
 
         # Block signals
@@ -856,21 +885,31 @@ class Trackma(QMainWindow):
             self.generate_episode_menus(self.menu_play, utils.estimate_aired_episodes(show),show['my_progress'])
             self.show_progress_bar.setFormat('{}/?'.format(show['my_progress']))
 
+        if show.get('total_volumes'):
+            self.volumes_progress.setMaximum(show['total_volumes'])
+        else:
+            self.volumes_progress.setMaximum(10000)
+
         # Update information
         self.show_title.setText(show['title'])
         self.show_progress.setValue(show['my_progress'])
+        self.volumes_progress.setValue(show.get('my_volumes') or 0)
         self.show_status.setCurrentIndex(self.statuses_nums.index(show['my_status']))
         self.show_score.setValue(show['my_score'])
 
         # Enable relevant buttons
         self.show_progress.setEnabled(True)
+        self.volumes_progress.setEnabled(True)
         self.show_score.setEnabled(True)
         self.show_progress_btn.setEnabled(True)
+        self.volumes_progress_btn.setEnabled(True)
         self.show_score_btn.setEnabled(True)
         if 'can_tag' in self.mediainfo and self.mediainfo.get('can_tag'):
             self.show_tags_btn.setEnabled(True)
         self.show_inc_btn.setEnabled(True)
         self.show_dec_btn.setEnabled(True)
+        self.volumes_inc_btn.setEnabled(True)
+        self.volumes_dec_btn.setEnabled(True)
         self.show_play_btn.setEnabled(True)
         self.show_status.setEnabled(True)
 
@@ -1142,6 +1181,19 @@ class Trackma(QMainWindow):
         self._busy(True)
         self.worker_call('set_episode', self.r_generic, self.selected_show_id, self.show_progress.value())
 
+    def s_plus_volumes(self):
+        self._busy(True)
+        self.worker_call('set_volumes', self.r_generic, self.selected_show_id, self.volumes_progress.value()+1)
+
+    def s_rem_volumes(self):
+        if not self.volumes_progress.value() <= 0:
+            self._busy(True)
+            self.worker_call('set_volumes', self.r_generic, self.selected_show_id, self.volumes_progress.value()-1)
+
+    def s_set_volumes(self):
+        self._busy(True)
+        self.worker_call('set_volumes', self.r_generic, self.selected_show_id, self.volumes_progress.value())
+
     def s_set_score(self):
         self._busy(True)
         self.worker_call('set_score', self.r_generic, self.selected_show_id, self.show_score.value())
@@ -1384,6 +1436,10 @@ class Trackma(QMainWindow):
         self.notebook.setCurrentIndex( self.statuses_nums.index(show['my_status']) )
         # Refresh filter
         self.s_filter_changed()
+        # Select it again
+        row = self._get_row_from_showid(self.show_lists[show['my_status']], show['id'])
+        if row is not None:
+            self.show_lists[show['my_status']].selectRow(row)
 
     def ws_changed_queue(self, queue):
         self._update_queue_counter(queue)
@@ -1497,6 +1553,7 @@ class Trackma(QMainWindow):
                 self._update_tracker_info(tracker_info['state'], tracker_info['timer'])
 
             # Rebuild lists
+            self._show_volumes(self.api_info['mediatype'] == 'manga')
             self._rebuild_lists(showlist, altnames, library)
 
             self.s_show_selected(None)
@@ -2986,6 +3043,7 @@ class Engine_Worker(QtCore.QThread):
         super(Engine_Worker, self).__init__()
         self.engine = Engine(account, self._messagehandler)
         self.engine.connect_signal('episode_changed', self._changed_show)
+        self.engine.connect_signal('volumes_changed', self._changed_show)
         self.engine.connect_signal('score_changed', self._changed_show)
         self.engine.connect_signal('tags_changed', self._changed_show)
         self.engine.connect_signal('status_changed', self._changed_list)
@@ -3003,6 +3061,7 @@ class Engine_Worker(QtCore.QThread):
             'reload': self._reload,
             'get_list': self._get_list,
             'set_episode': self._set_episode,
+            'set_volumes':self._set_volumes,
             'set_score': self._set_score,
             'set_status': self._set_status,
             'set_tags': self._set_tags,
@@ -3104,6 +3163,14 @@ class Engine_Worker(QtCore.QThread):
             self._error(e)
             return {'success': False}
 
+        return {'success': True}
+
+    def _set_volumes(self, showid, volumes):
+        try:
+            self.engine.set_volumes(showid, volumes)
+        except utils.TrackmaError as e:
+            self._error(e)
+            return {'success': False}
         return {'success': True}
 
     def _set_score(self, showid, score):

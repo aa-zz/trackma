@@ -456,12 +456,11 @@ class Engine:
         # More checks
         if (show['total'] and newep > show['total']) or newep < 0:
             raise utils.EngineError('Episode out of limits.')
-        if show['my_progress'] == newep:
-            raise utils.EngineError("Show already at episode %d" % newep)
 
         # Change episode
-        self.msg.info(self.name, "Updating show %s to episode %d..." % (show['title'], newep))
-        self.data_handler.queue_update(show, 'my_progress', newep)
+        if show['my_progress'] != newep:
+            self.msg.info(self.name, "Updating show %s to episode %d..." % (show['title'], newep))
+            self.data_handler.queue_update(show, 'my_progress', newep)
 
         # Emit signal
         self._emit_signal('episode_changed', show)
@@ -504,6 +503,40 @@ class Engine:
         # Clear neweps flag
         if self.data_handler.get_show_attr(show, 'neweps'):
             self.data_handler.set_show_attr(show, 'neweps', False)
+
+        # Update the tracker with the new information
+        self._update_tracker()
+
+        return show
+
+    def set_volumes(self, showid, newvolumes):
+        """
+        Updates the number of volumes read of the specified **showid**
+        to **newvolumes** and queues the list update for the next sync.
+        """
+        # Check if operation is supported by the API
+        if not self.mediainfo.get('can_update') or not self.mediainfo.get('has_volumes'):
+            raise utils.EngineError('Operation not supported by API.')
+
+        # Check for the volume number
+        try:
+            newvolumes = int(newvolumes)
+        except ValueError:
+            raise utils.EngineError('Volumes must be numeric.')
+
+        # Get the show info
+        show = self.get_show_info(showid)
+        # More checks
+        if (show['total_volumes'] and newvolumes > show['total_volumes']) or newvolumes < 0:
+            raise utils.EngineError('Volume out of limits.')
+
+        # Change volumes
+        if show['my_volumes'] != newvolumes:
+            self.msg.info(self.name, "Updating show %s to volume %d..." % (show['title'], newvolumes))
+            self.data_handler.queue_update(show, 'my_volumes', newvolumes)
+
+        # Emit signal
+        self._emit_signal('volumes_changed', show)
 
         # Update the tracker with the new information
         self._update_tracker()
@@ -555,8 +588,6 @@ class Engine:
         # More checks
         if newscore > self.mediainfo['score_max']:
             raise utils.EngineError('Score out of limits.')
-        if show['my_score'] == newscore:
-            raise utils.EngineError("Score already at %s" % newscore)
 
         # Change score
         self.msg.info(self.name, "Updating show %s to score %s..." % (show['title'], newscore))
@@ -975,5 +1006,5 @@ class Engine:
         """Joins the directory name with the file name to return the show name."""
         searchdir = utils.expand_path(self.config['searchdir'])
         relative = fullpath[len(searchdir):]
-        
+
         return relative.replace(os.path.sep, " ")

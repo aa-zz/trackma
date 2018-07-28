@@ -65,6 +65,7 @@ class libmal(lib):
     }
     mediatypes['manga'] = {
         'has_progress': True,
+        'has_volumes': True,
         'can_add': True,
         'can_delete': True,
         'can_score': True,
