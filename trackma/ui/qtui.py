@@ -19,6 +19,7 @@ import sys
 import os
 import datetime
 import subprocess
+import traceback
 
 pyqt_version = 0
 skip_pyqt5 = "PYQT4" in os.environ  # TODO: Make this a program argument or something
@@ -540,9 +541,7 @@ class Trackma(QMainWindow):
 
     def fatal(self, msg):
         QMessageBox.critical(self, 'Fatal Error', "Fatal Error! Reason:\n\n{0}".format(msg), QMessageBox.Ok)
-        self._busy()
-        self.finish = False
-        self.worker_call('unload', self.r_engine_unloaded)
+        sys.exit(99)
 
     def worker_call(self, function, ret_function, *args, **kwargs):
         # Run worker in a thread
@@ -3026,6 +3025,8 @@ class Engine_Worker(QtCore.QThread):
         self.raised_error.emit(str(msg))
 
     def _fatal(self, msg):
+        if isinstance(msg, Exception) and msg.__traceback__:
+            msg = ''.join(traceback.format_exception(etype=type(msg), value=msg, tb=msg.__traceback__))
         self.raised_fatal.emit(str(msg))
 
     def _changed_show(self, show, changes=None):
@@ -3225,8 +3226,9 @@ class Engine_Worker(QtCore.QThread):
         try:
             ret = self.function(*self.args,**self.kwargs)
             self.finished.emit(ret)
-        except utils.TrackmaFatal as e:
-            self._fatal(e)
+        except Exception as e:
+            tb = sys.exc_info()[2]
+            self._fatal(e.with_traceback(tb))
 
 
 def getIcon(icon_name):
@@ -3266,7 +3268,7 @@ def main():
     try:
         mainwindow = Trackma(debug)
         sys.exit(app.exec_())
-    except utils.TrackmaFatal as e:
+    except Exception as e:
         QMessageBox.critical(None, 'Fatal Error', "{0}".format(e), QMessageBox.Ok)
 
 if __name__ == '__main__':
