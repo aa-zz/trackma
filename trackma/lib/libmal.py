@@ -369,6 +369,7 @@ class libmal(lib):
                 'my_volumes':   item['num_read_volumes'],
                 'my_status':    item['status'],
                 'my_score':     item['score'],
+                'my_tags':      item['tags'],
                 'my_start_date':  self._str2date( item['start_date_string'] ),
                 'my_finish_date': self._str2date( item['finish_date_string'] ),
                 'total':        item['manga_num_chapters'],
