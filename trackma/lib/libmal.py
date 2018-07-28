@@ -21,7 +21,8 @@ import urllib.request
 import datetime
 import base64
 import gzip
-import xml.etree.ElementTree as ET
+import json
+import time
 
 from trackma.lib.lib import lib
 from trackma import utils
@@ -32,8 +33,7 @@ class libmal(lib):
     Should inherit a base library interface.
 
     Website: http://www.myanimelist.net
-    API documentation: https://myanimelist.net/modules.php?go=api
-    Designed by: Garrett Gyssler (https://myanimelist.net/profile/Xinil)
+    API documentation: none
 
     """
     name = 'libmal'
@@ -81,9 +81,11 @@ class libmal(lib):
         'score_step': 1,
     }
 
-    # Authorized User-Agent for Trackma
-    url = 'https://myanimelist.net/api/'
-    useragent = 'api-team-f894427cc1c571f79da49605ef8b112f'
+    # 'Authorized' User-Agent for Trackma
+    url = 'https://myanimelist.net/'
+    useragent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.113 Safari/537.36'
+
+    image_re = re.compile(r'images/(?:anime|manga)/([^/]+)/([^\.]+)(\.[a-zA-Z]+)')
 
     def __init__(self, messenger, account, userconfig):
         """Initializes the useragent through credentials."""
@@ -91,38 +93,54 @@ class libmal(lib):
         # together with the urllib opener.
         super(libmal, self).__init__(messenger, account, userconfig)
 
-        token = '%s:%s' % (account['username'], account['password'])
-        auth_string = 'Basic ' + base64.b64encode(token.encode('utf-8')).decode('ascii').replace('\n', '')
-
-        self.username = self._get_userconfig('username')
-        self.opener = urllib.request.build_opener()
+        self.username = account['username']
+        self.password = account['password']
+        self.cookies = urllib.request.HTTPCookieProcessor()
+        self.opener = urllib.request.build_opener(self.cookies)
         self.opener.addheaders = [
             ('User-Agent', self.useragent),
-            ('Authorization', auth_string),
         ]
 
-    def _request(self, url):
+    def _request(self, url, data=None, jsondata=None, post=False, tries=1, retry_codes=(404,429)):
         """
         Requests the page as gzip and uncompresses it
 
         Returns a stream object
 
         """
-        try:
-            request = urllib.request.Request(url)
-            request.add_header('Accept-Encoding', 'gzip')
-            response = self.opener.open(request, timeout = 10)
-        except urllib.request.HTTPError as e:
-            if e.code == 401:
-                raise utils.APIError(
-                        "Unauthorized. Please check if your username and password are correct."
-                        "\n\nPlease note that you might also be getting this error if you have "
-                        "non-alphanumeric characters in your password due to an upstream "
-                        "MAL bug (#138).")
+        data = data or jsondata
+        if post:
+            data = data or {}
+            data['csrf_token'] = self._get_userconfig('csrf_token')
+        if data:
+            if not post:
+                url += "?" + urllib.parse.urlencode(data)
+                data = jsondata = None
             else:
-                raise utils.APIError("HTTP error %d: %s" % (e.code, e.reason))
-        except urllib.request.URLError as e:
-            raise utils.APIError("Connection error: %s" % e)
+                data = (json.dumps(data) if jsondata else urllib.parse.urlencode(data)).encode('utf-8')
+
+        for i in range(tries):
+            try:
+                #print(url, data.decode('utf-8') if data else data)
+                request = urllib.request.Request(url, data=data)
+                request.add_header('Accept-Encoding', 'gzip')
+                if jsondata:
+                    request.add_header('Content-Type', 'application/json')
+                response = self.opener.open(request, timeout = 10)
+                break
+            except urllib.request.HTTPError as e:
+                if tries > 1 and e.code in retry_codes:
+                    time.sleep(min(0.1 * (i+1), 0.3))
+                elif e.code == 401:
+                    raise utils.APIError(
+                            "Unauthorized. Please check if your username and password are correct."
+                            "\n\nPlease note that you might also be getting this error if you have "
+                            "non-alphanumeric characters in your password due to an upstream "
+                            "MAL bug (#138).")
+                else:
+                    raise utils.APIError("HTTP error %d: %s" % (e.code, e.reason))
+            except urllib.request.URLError as e:
+                raise utils.APIError("Connection error: %s" % e)
 
         if response.info().get('content-encoding') == 'gzip':
             ret = gzip.decompress(response.read())
@@ -130,7 +148,9 @@ class libmal(lib):
             # If the content is not gzipped return it as-is
             ret = response.read()
         if isinstance(ret, bytes):
-            return ret.decode('utf-8')
+            ret = ret.decode('utf-8')
+        if response.info().get('content-type').startswith('application/json'):
+            ret = json.loads(ret)
         return ret
 
     def check_credentials(self):
@@ -140,13 +160,27 @@ class libmal(lib):
 
         self.msg.info(self.name, 'Logging in...')
 
-        response = self._request(self.url + "account/verify_credentials.xml")
-        root = self._parse_xml(response)
-        (userid, username) = self._parse_credentials(root)
-        self.username = username
+        response = self._request(self.url + "login.php")
+        csrf = re.search(r'csrf_token.*content=[\'"]([^\'"]+)[\'"]', response)
+        if not csrf:
+            raise utils.APIError("Could not find the CSRF token.")
+        csrf_token = csrf.group(1)
+        self._set_userconfig('csrf_token', csrf_token)
+        self.msg.info(self.name, 'got csrf ' + csrf_token)
 
-        self._set_userconfig('userid', userid)
-        self._set_userconfig('username', username)
+        login_data = {
+            'user_name': self.username, 'password': self.password, 'cookie': '1',
+            'sublogin': 'Login', 'submit': '1'
+        }
+        response = self._request(self.url + "login.php", data=login_data, post=True)
+        if '"og:url" content="https://myanimelist.net/login.php"' in response:
+            raise utils.APIError(
+                "Unauthorized. Please check if your username and password are correct."
+                "\n\nPlease note that you might also be getting this error if you have "
+                "non-alphanumeric characters in your password due to an upstream "
+                "MAL bug (#138).")
+
+        self._set_userconfig('username', self.username)
         self._emit_signal('userconfig_changed')
 
         self.logged_in = True
@@ -159,19 +193,21 @@ class libmal(lib):
         self.msg.info(self.name, 'Downloading list...')
 
         try:
-            # Get an XML list from MyAnimeList API
-            data = self._request("https://myanimelist.net/malappinfo.php?u="+self.username+"&status=all&type="+self.mediatype)
-
-            # Parse the XML data and load it into a dictionary
-            # using the proper function (anime or manga)
-            root = self._parse_xml(data)
+            # Get the list
+            data = {'status': 7}
+            url = "{}{}list/{}/load.json".format(self.url, self.mediatype, self.username)
+            result = response = self._request(url, data=data)
+            while response:
+                data['offset'] = len(result)
+                response = self._request(url, data=data, tries=5)
+                result += response
 
             if self.mediatype == 'anime':
                 self.msg.info(self.name, 'Parsing anime list...')
-                return self._parse_anime(root)
+                return self._parse_anime(result)
             elif self.mediatype == 'manga':
                 self.msg.info(self.name, 'Parsing manga list...')
-                return self._parse_manga(root)
+                return self._parse_manga(result)
             else:
                 raise utils.APIFatal('Attempted to parse unsupported media type.')
         except urllib.request.HTTPError as e:
@@ -184,30 +220,26 @@ class libmal(lib):
         self.check_credentials()
         self.msg.info(self.name, "Adding show %s..." % item['title'])
 
-        xml = self._build_xml(item)
+        data = self._build_crup(item)
 
-        # Send the XML as POST data to the MyAnimeList API
-        values = {'data': xml}
-        data = urllib.parse.urlencode(values)
+        # Post the request
         try:
-            self.opener.open(self.url + self.mediatype + "list/add/" + str(item['id']) + ".xml", data.encode('utf-8'))
-        except urllib.request.HTTPError as e:
-            raise utils.APIError('Error adding: ' + str(e.code))
+            self._request(self.url + 'ownlist/anime/add.json', jsondata=data, post=True)
+        except utils.APIError as e:
+            raise utils.APIError('Error adding %s: %s' % (item['title'], str(e))) from e
 
-    def update_show(self, item):
+    def update_show(self, item, show):
         """Sends a show update to the server"""
         self.check_credentials()
         self.msg.info(self.name, "Updating show %s..." % item['title'])
 
-        xml = self._build_xml(item)
+        data = self._build_crup(item, show)
 
-        # Send the XML as POST data to the MyAnimeList API
-        values = {'data': xml}
-        data = urllib.parse.urlencode(values)
+        # Post the request
         try:
-            self.opener.open(self.url + self.mediatype + "list/update/" + str(item['id']) + ".xml", data.encode('utf-8'))
-        except urllib.request.HTTPError as e:
-            raise utils.APIError('Error updating: ' + str(e.code))
+            resp = self._request('{}ownlist/{}/edit.json'.format(self.url, self.mediatype), jsondata=data, post=True)
+        except utils.APIError as e:
+            raise utils.APIError('Error updating %s: %s' % (item['title'], str(e))) from e
 
     def delete_show(self, item):
         """Sends a show delete to the server"""
@@ -215,70 +247,55 @@ class libmal(lib):
         self.msg.info(self.name, "Deleting show %s..." % item['title'])
 
         try:
-            self.opener.open(self.url + self.mediatype + "list/delete/" + str(item['id']) + ".xml")
-        except urllib.request.HTTPError as e:
-            raise utils.APIError('Error deleting: ' + str(e.code))
+            self._request('{}ownlist/anime/{id}/delete'.format(self.url, item['id']), post=True)
+        except utils.APIError as e:
+            raise utils.APIError('Error deleting %s: %s' % (item['title'], str(e))) from e
 
     def search(self, criteria):
         """Searches MyAnimeList database for the queried show"""
         self.msg.info(self.name, "Searching for %s..." % criteria)
 
         # Send the urlencoded query to the search API
-        query = urllib.parse.urlencode({'q': criteria})
-        data = self._request(self.url + self.mediatype + "/search.xml?" + query)
-
-        # Load the results into XML
-        try:
-            root = self._parse_xml(data)
-        except ET.ParseError as e:
-            if e.code == 3:
-                # Empty document; no results
-                return []
-            else:
-                raise utils.APIError("Parser error: %r" % e)
-        except IOError:
-            raise utils.APIError("IO error: %r" % e)
-
-        # Use the correct tag name for episodes
-        if self.mediatype == 'manga':
-            episodes_str = 'chapters'
-        else:
-            episodes_str = 'episodes'
+        query = {'keyword': criteria, 'type': self.mediatype, 'v': 1}
+        data = self._request(self.url + 'search/prefix.json', data=query)
+        items = (y for x in data['categories'] for y in x['items'])
 
         # Since the MAL API returns the status as a string, and
         # we handle statuses as integers, we need to convert them
         if self.mediatype == 'anime':
+            status_key = 'aired'
             status_translate = {'Currently Airing': utils.STATUS_AIRING,
                     'Finished Airing': utils.STATUS_FINISHED,
                     'Not yet aired': utils.STATUS_NOTYET}
         elif self.mediatype == 'manga':
+            status_key = 'published'
             status_translate = {'Publishing': utils.STATUS_AIRING,
                     'Finished': utils.STATUS_AIRING}
 
         entries = list()
-        for child in root.iter('entry'):
+        for item in items:
             show = utils.show()
-            showid = int(child.find('id').text)
+            showid = item['id']
             show.update({
                 'id':           showid,
-                'title':        child.find('title').text,
-                'type':         child.find('type').text,
-                'status':       status_translate[child.find('status').text], # TODO : This should return an int!
-                'total':        int(child.find(episodes_str).text),
-                'image':        child.find('image').text,
-                'url':          "https://myanimelist.net/anime/%d" % showid,
-                'start_date':   self._str2date( child.find('start_date').text ),
-                'end_date':     self._str2date( child.find('end_date').text ),
+                'title':        item['name'],
+                'type':         item['type'],
+                'status':       status_translate[item['payload']['status']], # TODO : This should return an int!
+                #'total':        int(child.find(episodes_str).text),
+                'image':        self._get_image_url(self.mediatype, item['image_url']),
+                'url':          item['url'],
+                #'start_date':   self._str2date( child.find('start_date').text ),
+                #'end_date':     self._str2date( child.find('end_date').text ),
                 'extra': [
-                    ('English',  child.find('english').text),
-                    ('Synonyms', child.find('synonyms').text),
-                    ('Synopsis', self._translate_synopsis(child.find('synopsis').text)),
-                    (episodes_str.title(), child.find(episodes_str).text),
-                    ('Type',     child.find('type').text),
-                    ('Score',    child.find('score').text),
-                    ('Status',   child.find('status').text),
-                    ('Start date', child.find('start_date').text),
-                    ('End date', child.find('end_date').text),
+                    #('English',  child.find('english').text),
+                    #('Synonyms', child.find('synonyms').text),
+                    #('Synopsis', self._translate_synopsis(child.find('synopsis').text)),
+                    #(episodes_str.title(), child.find(episodes_str).text),
+                    ('Type',     item['type']),
+                    ('Score',    item['payload']['score']),
+                    ('Status',   item['payload']['status']),
+                    ('Start date', item['payload'][status_key]),
+                    #('End date', child.find('end_date').text),
                     ]
             })
             entries.append(show)
@@ -311,397 +328,124 @@ class libmal(lib):
 
         return reslist
 
-    def _parse_credentials(self, root):
-        if root is not None:
-            userid = int(root.find('id').text)
-            username = root.find('username').text
-            return (userid, username)
-
-    def _parse_anime(self, root):
-        """Converts an XML anime list to a dictionary"""
+    def _parse_anime(self, items):
+        """Converts a JSON anime list to a dictionary"""
         showlist = dict()
-        for child in root.iter('anime'):
-            show_id = int(child.find('series_animedb_id').text)
-            if child.find('series_synonyms').text:
-                aliases = child.find('series_synonyms').text.lstrip('; ').split('; ')
-            else:
-                aliases = []
 
+        for item in items:
             show = utils.show()
+            show_id = item['anime_id']
             show.update({
                 'id':           show_id,
-                'title':        child.find('series_title').text,
-                'aliases':      aliases,
-                'my_progress':  int(child.find('my_watched_episodes').text),
-                'my_status':    int(child.find('my_status').text),
-                'my_score':     int(child.find('my_score').text),
-                'my_start_date':  self._str2date( child.find('my_start_date').text ),
-                'my_finish_date': self._str2date( child.find('my_finish_date').text ),
-                'my_tags':         child.find('my_tags').text,
-                'total':     int(child.find('series_episodes').text),
-                'status':       int(child.find('series_status').text),
-                'start_date':   self._str2date( child.find('series_start').text ),
-                'end_date':     self._str2date( child.find('series_end').text ),
-                'image':        child.find('series_image').text,
-                'url':          "https://myanimelist.net/anime/%d" % show_id,
+                'title':        item['anime_title'],
+                'my_progress':  item['num_watched_episodes'],
+                'my_status':    item['status'],
+                'my_score':     item['score'],
+                'my_start_date':  self._str2date( item['start_date_string'] ),
+                'my_finish_date': self._str2date( item['finish_date_string'] ),
+                'my_tags':         item['tags'],
+                'total':        item['anime_num_episodes'],
+                'status':       item['anime_airing_status'],
+                'start_date':   self._str2date( item['anime_start_date_string'] ),
+                'end_date':     self._str2date( item['anime_end_date_string'] ),
+                'image':        self._get_image_url('anime', item['anime_image_path']),
+                'url':          self.url + item['anime_url'][1:],
             })
             showlist[show_id] = show
         return showlist
 
-    def _parse_manga(self, root):
-        """Converts an XML manga list to a dictionary"""
+    def _parse_manga(self, items):
+        """Converts a JSON manga list to a dictionary"""
         mangalist = dict()
-        for child in root.iter('manga'):
-            manga_id = int(child.find('series_mangadb_id').text)
-            if child.find('series_synonyms').text:
-                aliases = child.find('series_synonyms').text.lstrip('; ').split('; ')
-            else:
-                aliases = []
 
+        for item in items:
             show = utils.show()
+            show_id = item['manga_id']
             show.update({
-                'id':           manga_id,
-                'title':        child.find('series_title').text,
-                'aliases':      aliases,
-                'my_progress':  int(child.find('my_read_chapters').text),
-                'my_status':    int(child.find('my_status').text),
-                'my_score':     int(child.find('my_score').text),
-                'my_start_date':  self._str2date( child.find('my_start_date').text ),
-                'my_finish_date': self._str2date( child.find('my_finish_date').text ),
-                'total':     int(child.find('series_chapters').text),
-                'status':       int(child.find('series_status').text),
-                'start_date':   self._str2date( child.find('series_start').text ),
-                'end_date':     self._str2date( child.find('series_end').text ),
-                'image':        child.find('series_image').text,
-                'url':          "https://myanimelist.net/manga/%d" % manga_id,
+                'id':           show_id,
+                'title':        item['manga_title'],
+                'my_progress':  item['num_read_chapters'],
+                'my_volumes':   item['num_read_volumes'],
+                'my_status':    item['status'],
+                'my_score':     item['score'],
+                'my_start_date':  self._str2date( item['start_date_string'] ),
+                'my_finish_date': self._str2date( item['finish_date_string'] ),
+                'total':        item['manga_num_chapters'],
+                'total_volumes': item['manga_num_volumes'],
+                'status':       item['manga_publishing_status'],
+                'start_date':   self._str2date( item['manga_start_date_string'] ),
+                'end_date':     self._str2date( item['manga_end_date_string'] ),
+                'image':        self._get_image_url('manga', item['manga_image_path']),
+                'url':          self.url + item['manga_url'][1:],
             })
-            mangalist[manga_id] = show
+            mangalist[show_id] = show
         return mangalist
 
-    def _build_xml(self, item):
+    def _build_crup(self, item, show=None):
         """
-        Creates an "anime|manga data" XML to be used in the
-        add, update and delete methods.
+        Converts an "anime|manga data" entry into the format
+        that MAL expects.
 
-        More information:
-          https://myanimelist.net/modules.php?go=api#animevalues
-          https://myanimelist.net/modules.php?go=api#mangavalues
-
+        Fun fact:
+          They apparently use Composer:
+          https://github.com/composer/composer
         """
-
-        # Start building XML
-        root = ET.Element("entry")
 
         # Use the correct name depending on mediatype
         if self.mediatype == 'anime':
-            progressname = 'episode'
+            idname = 'anime_id'
+            progressname = 'num_watched_episodes'
         else:
-            progressname = 'chapter'
+            idname = 'manga_id'
+            progressname = 'num_read_chapters'
+
+        # Start building the result
+        result = {idname: item['id']}
+
+        # Update *required* keys
+        if 'my_status' in item:
+            result['status'] = item['my_status']
+        elif show is not None and 'my_status'in show:
+            result['status'] = show['my_status']
 
         # Update necessary keys
         if 'my_progress' in item:
-            episode = ET.SubElement(root, progressname)
-            episode.text = str(item['my_progress'])
-        if 'my_status' in item:
-            status = ET.SubElement(root, "status")
-            status.text = str(item['my_status'])
+            result[progressname] = item['my_progress']
+        if self.mediatype == 'manga' and 'my_volumes' in item:
+            result['num_read_volumes'] = item['my_volumes']
         if 'my_score' in item:
-            score = ET.SubElement(root, "score")
-            score.text = str(item['my_score'])
+            result['score'] = item['my_score']
         if 'my_start_date' in item:
-            start_date = ET.SubElement(root, "date_start")
-            start_date.text = self._date2str(item['my_start_date'])
+            result['start_date'] = {
+                'year': item['my_start_date'].year,
+                'month': item['my_start_date'].month,
+                'day': item['my_start_date'].day,
+            }
         if 'my_finish_date' in item:
-            finish_date = ET.SubElement(root, "date_finish")
-            finish_date.text = self._date2str(item['my_finish_date'])
+            result['finish_date'] = {
+                'year': item['my_finish_date'].year,
+                'month': item['my_finish_date'].month,
+                'day': item['my_finish_date'].day,
+            }
         if 'my_tags' in item:
-            tags = ET.SubElement(root, "tags")
-            tags.text = str(item['my_tags'])
+            result['tags'] = str(item['my_tags'])
 
-        return ET.tostring(root)
+        return result
 
-    def _date2str(self, date):
-        if date:
-            return date.strftime("%m%d%Y")
-        else:
-            return '0000-00-00'
+    def _get_image_url(self, list_type, raw_url):
+        m = self.image_re.search(raw_url)
+        if m:
+            return 'https://myanimelist.cdn-dena.com/images/{}/{}/{}{}'.format(
+                list_type, m.group(1), m.group(2), m.group(3)
+            )
+        return raw_url
 
     def _str2date(self, string):
-        if string != '0000-00-00':
-            try:
-                return datetime.datetime.strptime(string, "%Y-%m-%d")
-            except ValueError:
-                return None # Ignore date if it's invalid
-        else:
-            return None
-
-    def _parse_xml(self, data):
-        # For some reason MAL returns an XML file with HTML exclusive
-        # entities like &aacute;, so we have to create a custom XMLParser
-        # to convert these entities correctly.
-
-        ENTITIES = {
-            "nbsp":     u'\u00A0',
-            "iexcl":    u'\u00A1',
-            "cent":     u'\u00A2',
-            "pound":    u'\u00A3',
-            "curren":   u'\u00A4',
-            "yen":      u'\u00A5',
-            "brvbar":   u'\u00A6',
-            "sect":     u'\u00A7',
-            "uml":      u'\u00A8',
-            "copy":     u'\u00A9',
-            "ordf":     u'\u00AA',
-            "laquo":    u'\u00AB',
-            "not":      u'\u00AC',
-            "shy":      u'\u00AD',
-            "reg":      u'\u00AE',
-            "macr":     u'\u00AF',
-            "deg":      u'\u00B0',
-            "plusmn":   u'\u00B1',
-            "sup2":     u'\u00B2',
-            "sup3":     u'\u00B3',
-            "acute":    u'\u00B4',
-            "micro":    u'\u00B5',
-            "para":     u'\u00B6',
-            "middot":   u'\u00B7',
-            "cedil":    u'\u00B8',
-            "sup1":     u'\u00B9',
-            "ordm":     u'\u00BA',
-            "raquo":    u'\u00BB',
-            "frac14":   u'\u00BC',
-            "frac12":   u'\u00BD',
-            "frac34":   u'\u00BE',
-            "iquest":   u'\u00BF',
-            "Agrave":   u'\u00C0',
-            "Aacute":   u'\u00C1',
-            "Acirc":    u'\u00C2',
-            "Atilde":   u'\u00C3',
-            "Auml":     u'\u00C4',
-            "Aring":    u'\u00C5',
-            "AElig":    u'\u00C6',
-            "Ccedil":   u'\u00C7',
-            "Egrave":   u'\u00C8',
-            "Eacute":   u'\u00C9',
-            "Ecirc":    u'\u00CA',
-            "Euml":     u'\u00CB',
-            "Igrave":   u'\u00CC',
-            "Iacute":   u'\u00CD',
-            "Icirc":    u'\u00CE',
-            "Iuml":     u'\u00CF',
-            "ETH":      u'\u00D0',
-            "Ntilde":   u'\u00D1',
-            "Ograve":   u'\u00D2',
-            "Oacute":   u'\u00D3',
-            "Ocirc":    u'\u00D4',
-            "Otilde":   u'\u00D5',
-            "Ouml":     u'\u00D6',
-            "times":    u'\u00D7',
-            "Oslash":   u'\u00D8',
-            "Ugrave":   u'\u00D9',
-            "Uacute":   u'\u00DA',
-            "Ucirc":    u'\u00DB',
-            "Uuml":     u'\u00DC',
-            "Yacute":   u'\u00DD',
-            "THORN":    u'\u00DE',
-            "szlig":    u'\u00DF',
-            "agrave":   u'\u00E0',
-            "aacute":   u'\u00E1',
-            "acirc":    u'\u00E2',
-            "atilde":   u'\u00E3',
-            "auml":     u'\u00E4',
-            "aring":    u'\u00E5',
-            "aelig":    u'\u00E6',
-            "ccedil":   u'\u00E7',
-            "egrave":   u'\u00E8',
-            "eacute":   u'\u00E9',
-            "ecirc":    u'\u00EA',
-            "euml":     u'\u00EB',
-            "igrave":   u'\u00EC',
-            "iacute":   u'\u00ED',
-            "icirc":    u'\u00EE',
-            "iuml":     u'\u00EF',
-            "eth":      u'\u00F0',
-            "ntilde":   u'\u00F1',
-            "ograve":   u'\u00F2',
-            "oacute":   u'\u00F3',
-            "ocirc":    u'\u00F4',
-            "otilde":   u'\u00F5',
-            "ouml":     u'\u00F6',
-            "divide":   u'\u00F7',
-            "oslash":   u'\u00F8',
-            "ugrave":   u'\u00F9',
-            "uacute":   u'\u00FA',
-            "ucirc":    u'\u00FB',
-            "uuml":     u'\u00FC',
-            "yacute":   u'\u00FD',
-            "thorn":    u'\u00FE',
-            "yuml":     u'\u00FF',
-            "fnof":     u'\u0192',
-            "Alpha":    u'\u0391',
-            "Beta":     u'\u0392',
-            "Gamma":    u'\u0393',
-            "Delta":    u'\u0394',
-            "Epsilon":  u'\u0395',
-            "Zeta":     u'\u0396',
-            "Eta":      u'\u0397',
-            "Theta":    u'\u0398',
-            "Iota":     u'\u0399',
-            "Kappa":    u'\u039A',
-            "Lambda":   u'\u039B',
-            "Mu":       u'\u039C',
-            "Nu":       u'\u039D',
-            "Xi":       u'\u039E',
-            "Omicron":  u'\u039F',
-            "Pi":       u'\u03A0',
-            "Rho":      u'\u03A1',
-            "Sigma":    u'\u03A3',
-            "Tau":      u'\u03A4',
-            "Upsilon":  u'\u03A5',
-            "Phi":      u'\u03A6',
-            "Chi":      u'\u03A7',
-            "Psi":      u'\u03A8',
-            "Omega":    u'\u03A9',
-            "alpha":    u'\u03B1',
-            "beta":     u'\u03B2',
-            "gamma":    u'\u03B3',
-            "delta":    u'\u03B4',
-            "epsilon":  u'\u03B5',
-            "zeta":     u'\u03B6',
-            "eta":      u'\u03B7',
-            "theta":    u'\u03B8',
-            "iota":     u'\u03B9',
-            "kappa":    u'\u03BA',
-            "lambda":   u'\u03BB',
-            "mu":       u'\u03BC',
-            "nu":       u'\u03BD',
-            "xi":       u'\u03BE',
-            "omicron":  u'\u03BF',
-            "pi":       u'\u03C0',
-            "rho":      u'\u03C1',
-            "sigmaf":   u'\u03C2',
-            "sigma":    u'\u03C3',
-            "tau":      u'\u03C4',
-            "upsilon":  u'\u03C5',
-            "phi":      u'\u03C6',
-            "chi":      u'\u03C7',
-            "psi":      u'\u03C8',
-            "omega":    u'\u03C9',
-            "thetasym": u'\u03D1',
-            "upsih":    u'\u03D2',
-            "piv":      u'\u03D6',
-            "bull":     u'\u2022',
-            "hellip":   u'\u2026',
-            "prime":    u'\u2032',
-            "Prime":    u'\u2033',
-            "oline":    u'\u203E',
-            "frasl":    u'\u2044',
-            "weierp":   u'\u2118',
-            "image":    u'\u2111',
-            "real":     u'\u211C',
-            "trade":    u'\u2122',
-            "alefsym":  u'\u2135',
-            "larr":     u'\u2190',
-            "uarr":     u'\u2191',
-            "rarr":     u'\u2192',
-            "darr":     u'\u2193',
-            "harr":     u'\u2194',
-            "crarr":    u'\u21B5',
-            "lArr":     u'\u21D0',
-            "uArr":     u'\u21D1',
-            "rArr":     u'\u21D2',
-            "dArr":     u'\u21D3',
-            "hArr":     u'\u21D4',
-            "forall":   u'\u2200',
-            "part":     u'\u2202',
-            "exist":    u'\u2203',
-            "empty":    u'\u2205',
-            "nabla":    u'\u2207',
-            "isin":     u'\u2208',
-            "notin":    u'\u2209',
-            "ni":       u'\u220B',
-            "prod":     u'\u220F',
-            "sum":      u'\u2211',
-            "minus":    u'\u2212',
-            "lowast":   u'\u2217',
-            "radic":    u'\u221A',
-            "prop":     u'\u221D',
-            "infin":    u'\u221E',
-            "ang":      u'\u2220',
-            "and":      u'\u2227',
-            "or":       u'\u2228',
-            "cap":      u'\u2229',
-            "cup":      u'\u222A',
-            "int":      u'\u222B',
-            "there4":   u'\u2234',
-            "sim":      u'\u223C',
-            "cong":     u'\u2245',
-            "asymp":    u'\u2248',
-            "ne":       u'\u2260',
-            "equiv":    u'\u2261',
-            "le":       u'\u2264',
-            "ge":       u'\u2265',
-            "sub":      u'\u2282',
-            "sup":      u'\u2283',
-            "nsub":     u'\u2284',
-            "sube":     u'\u2286',
-            "supe":     u'\u2287',
-            "oplus":    u'\u2295',
-            "otimes":   u'\u2297',
-            "perp":     u'\u22A5',
-            "sdot":     u'\u22C5',
-            "lceil":    u'\u2308',
-            "rceil":    u'\u2309',
-            "lfloor":   u'\u230A',
-            "rfloor":   u'\u230B',
-            "lang":     u'\u2329',
-            "rang":     u'\u232A',
-            "loz":      u'\u25CA',
-            "spades":   u'\u2660',
-            "clubs":    u'\u2663',
-            "hearts":   u'\u2665',
-            "diams":    u'\u2666',
-            "quot":     u'\"'    ,
-            "amp":      u'&'     ,
-            "lt":       u'<'     ,
-            "gt":       u'>'     ,
-            "OElig":    u'\u0152',
-            "oelig":    u'\u0153',
-            "Scaron":   u'\u0160',
-            "scaron":   u'\u0161',
-            "Yuml":     u'\u0178',
-            "circ":     u'\u02C6',
-            "tilde":    u'\u02DC',
-            "ensp":     u'\u2002',
-            "emsp":     u'\u2003',
-            "thinsp":   u'\u2009',
-            "zwnj":     u'\u200C',
-            "zwj":      u'\u200D',
-            "lrm":      u'\u200E',
-            "rlm":      u'\u200F',
-            "ndash":    u'\u2013',
-            "mdash":    u'\u2014',
-            "lsquo":    u'\u2018',
-            "rsquo":    u'\u2019',
-            "sbquo":    u'\u201A',
-            "ldquo":    u'\u201C',
-            "rdquo":    u'\u201D',
-            "bdquo":    u'\u201E',
-            "dagger":   u'\u2020',
-            "Dagger":   u'\u2021',
-            "permil":   u'\u2030',
-            "lsaquo":   u'\u2039',
-            "rsaquo":   u'\u203A',
-            "euro":     u'\u20AC',
-        }
-
-        # http://stackoverflow.com/a/35591479/2016221
-        magic = '''<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
-            "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd" [\n'''
-        magic += ''.join("<!ENTITY %s '&#%d;'>\n" % (key, ord(value)) for key, value in ENTITIES.items())
-        magic += '\n]>'
-
-        # strip xml declaration since we're concatenating something before it
-        data = re.sub('<\?.*?\?>', '', data)
-
-        return ET.fromstring(magic + data)
+        if string:
+            # Guessaroo
+            for fmt in ('%Y-%m-%d', '%m-%d-%y', '%d-%m-%y'):
+                try:
+                    return datetime.datetime.strptime(string, fmt)
+                except ValueError:
+                    pass # Ignore date if it's invalid
+        return None

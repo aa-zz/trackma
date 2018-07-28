@@ -119,7 +119,7 @@ class lib():
         """
         raise NotImplementedError
 
-    def update_show(self, item):
+    def update_show(self, item, show):
         """
         Sends the updates of a show to the remote site.
 

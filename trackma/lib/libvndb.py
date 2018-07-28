@@ -266,7 +266,7 @@ class libvndb(lib):
         # command.
         self.update_show(item)
 
-    def update_show(self, item):
+    def update_show(self, item, show=None):
         self.check_credentials()
 
         # Update status with set vnlist

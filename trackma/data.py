@@ -397,7 +397,7 @@ class Data():
                         if my_id:
                             show['my_id'] = my_id
                     elif operation == 'update':
-                        self.api.update_show(item)
+                        self.api.update_show(item, show)
                     elif operation == 'delete':
                         self.api.delete_show(item)
                     else:

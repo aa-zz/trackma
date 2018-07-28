@@ -230,7 +230,7 @@ class libshikimori(lib):
         self.msg.info(self.name, "Adding item %s..." % item['title'])
         return self._update_entry(item, "POST")
 
-    def update_show(self, item):
+    def update_show(self, item, show=None):
         self.check_credentials()
         self.msg.info(self.name, "Updating item %s..." % item['title'])
         return self._update_entry(item, "PUT")

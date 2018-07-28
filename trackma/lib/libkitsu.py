@@ -356,7 +356,7 @@ class libkitsu(lib):
         except urllib.request.HTTPError as e:
             raise utils.APIError('Error adding: ' + str(e.code))
 
-    def update_show(self, item):
+    def update_show(self, item, show=None):
         """Sends a show update to the server"""
         self.check_credentials()
         self.msg.info(self.name, "Updating show %s..." % item['title'])
