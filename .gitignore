@@ -5,3 +5,7 @@
 *.swp
 *.out
 *.log
+*.egg-info
+build
+dist
+venv
